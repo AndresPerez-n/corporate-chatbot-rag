@@ -1,0 +1,93 @@
+Technical Documentation Hub — Acme Corp Engineering
+Maintainer: Platform Team (platform-eng@acmecorp.com)
+Last updated: March 2025
+
+=== DATABASE MIGRATION GUIDE ===
+
+All migrations run via Alembic. Follow these steps exactly.
+
+Pre-migration checklist:
+  1. Open a maintenance window ticket in Jira (proj: OPS) at least 48 hours in advance.
+  2. Notify #eng-incidents Slack channel with estimated start time and downtime window.
+  3. Create a full database snapshot:
+       aws rds create-db-snapshot --db-instance-identifier prod-db \
+         --db-snapshot-identifier pre-migration-YYYYMMDD
+  4. Verify the snapshot status is "available" before proceeding.
+
+Running the migration:
+  1. Merge migration branch to main; CI runs alembic check automatically.
+  2. SSH into the migration runner EC2 instance (credentials in Vault).
+  3. Run: alembic upgrade head
+  4. If any step errors, run: alembic downgrade -1
+     Do NOT downgrade past the error step without consulting the DBA team.
+
+Post-migration validation:
+  Run the data integrity suite: pytest tests/db_integrity/ -v
+  Spot-check 3 key workflows in staging before declaring success.
+  Update the Jira ticket and post completion in #eng-incidents.
+
+Estimated downtime: 5-15 minutes for schema changes; 1-4 hours for large data backfills.
+Rollback: restore from pre-migration RDS snapshot (~20-40 minutes for prod DB size ~200 GB).
+Contact DBA team: dba@acmecorp.com
+
+=== INTERNAL API REFERENCE (v2) ===
+
+Base URL: https://api.internal.acmecorp.com/v2
+
+Authentication: all requests require a Bearer token from the internal IdP:
+  POST /auth/token
+  Body: { "client_id": "...", "client_secret": "...", "grant_type": "client_credentials" }
+  Returns: { "access_token": "...", "expires_in": 3600 }
+
+Tokens expire after 1 hour. Implement refresh logic; do not hardcode credentials.
+
+Key endpoints:
+  GET  /users/{id}          fetch user profile by internal ID
+  GET  /users?email={e}     look up user by email (exact match)
+  POST /events              emit a domain event (see Event Schema doc)
+  POST /documents/ingest    trigger async ingestion pipeline for a document URL
+
+Rate limits: 1,000 requests/minute per client_id. 429 responses include Retry-After header.
+Implement exponential backoff with jitter.
+
+SLA: 99.9% uptime, p95 latency < 200ms. Report issues to #api-support.
+
+=== DEPLOYMENT GUIDE ===
+
+Services deploy via GitHub Actions on merge to main:
+  1. Unit + integration tests must pass (CI gate, automatic)
+  2. Docker image built and pushed to ECR
+  3. Staging deploy (automatic on green CI)
+  4. Smoke tests on staging (automatic)
+  5. Production deploy (requires manual approval from on-call engineer in GitHub)
+
+Hotfix deploys: create branch from latest release tag, open PR with label "hotfix".
+This bypasses staging and goes straight to prod approval. Requires 2 staff engineer approvals.
+
+Rollback: re-run the previous successful production deploy job in GitHub Actions.
+Average rollback time: 3-5 minutes.
+
+=== INCIDENT RESPONSE ===
+
+Severity levels:
+  SEV-1: complete outage or data loss — page on-call immediately via PagerDuty
+  SEV-2: degraded functionality affecting >20% of users — notify #eng-incidents + on-call
+  SEV-3: minor degradation or single-user issue — create Jira ticket, no page
+
+Post-mortems are required for all SEV-1 and SEV-2 incidents within 5 business days.
+Template: Confluence > Engineering > Incident Post-Mortems.
+
+=== LOCAL DEVELOPMENT SETUP ===
+
+Requirements: Docker Desktop, Python 3.11, Node 20, AWS CLI (configured with dev profile).
+
+  git clone git@github.com:acmecorp/platform.git
+  cd platform
+  cp .env.example .env        # fill in secrets from 1Password vault "dev-secrets"
+  docker compose up -d        # starts postgres, redis, localstack
+  make dev                    # installs deps, runs migrations, starts API on :8000
+
+Common issues:
+  Port 5432 in use: stop local postgres or change POSTGRES_PORT in .env
+  AWS credential errors: run aws configure --profile dev with keys from 1Password
+  Redis connection refused: docker compose restart redis
