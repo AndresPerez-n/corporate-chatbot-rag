@@ -1,0 +1,86 @@
+Project Wiki — Acme Corp Internal Knowledge Base
+Maintained by: Engineering Leads + Product
+Last updated: April 2025
+
+=== TEAM DIRECTORY ===
+
+Platform Engineering
+  Lead: Sarah Chen (sarah.chen@acmecorp.com) — infra, CI/CD, internal tooling
+  On-call: see PagerDuty. Escalation: team lead > VP Eng > CTO
+  Slack: #team-platform
+
+Product — Core App
+  PM: James Okafor (james.okafor@acmecorp.com)
+  Lead Engineer: Priya Nair (priya.nair@acmecorp.com)
+  Slack: #team-core-app
+
+Data & ML
+  Lead: Marcus Webb (marcus.webb@acmecorp.com) — RAG pipelines, model serving, evals
+  Slack: #team-data-ml
+
+People Operations
+  HRBP for Engineering: Laura Diaz (laura.diaz@acmecorp.com)
+  Payroll / benefits: hr@acmecorp.com
+  IT helpdesk: it-support@acmecorp.com or #it-help in Slack
+
+=== ACTIVE PROJECTS ===
+
+PROJECT: OPPI (Internal AI Assistant)
+Status: Beta — internal users only
+Owner: Data & ML team
+Stack: Python, FastAPI, LangChain, ChromaDB, React
+Description: OPPI is the internal AI assistant that answers questions across HR, engineering,
+and product knowledge bases. The corporate-chatbot-rag repo is the foundational RAG
+pipeline powering OPPI.
+Current goal: improve retrieval precision for technical docs (hybrid BM25 + vector retrieval)
+Roadmap: role-based doc access, Slack integration, streaming responses
+Jira board: OPPI project
+
+PROJECT: Payments V2 Refactor
+Status: In progress (Q2 2025)
+Owner: Core App team
+Description: Migrating from Stripe v1 to v2 API and adding ACH payment support.
+Key risk: PCI-DSS compliance review required before launch; legal review in progress.
+Launch target: end of Q2 2025
+
+PROJECT: Data Warehouse Migration
+Status: Planning
+Owner: Data & ML team + Platform
+Description: Moving from Redshift to Snowflake. Motivation: cost reduction (~$12k/month
+Redshift vs ~$7k/month Snowflake estimate) and better dbt integration.
+Estimated start: Q3 2025
+
+=== ENGINEERING PROCESSES ===
+
+Sprint cadence: 2-week sprints. Planning Monday AM, retro Friday PM.
+All teams use Jira. Epics require a product brief in Confluence before work starts.
+
+Code review policy:
+  All PRs require at least 1 approval (2 for auth, payments, or data pipeline changes)
+  PRs open > 3 days without review: ping author in #eng-reviews
+  Automated checks must pass before merge (CI, linting, type checks)
+  Squash merge to main preferred
+
+Architecture Decision Records (ADRs):
+  New tech choices or significant architectural changes require an ADR.
+  Template: Confluence > Engineering > ADR Template
+  Must be approved by 2 staff engineers before implementation begins.
+
+=== TOOLS & ACCESS ===
+
+Tool              Access via
+GitHub            SSO — request via IT if not in org
+Jira/Confluence   SSO — auto-provisioned on Day 1
+AWS Console       SSO (Okta) — request role via IT ticket
+PagerDuty         IT provisions on-call members — request via #it-help
+1Password         IT provisions on onboarding — shared vaults per team
+Datadog           SSO — read access via IT, write access via team lead
+
+=== BENEFITS QUICK REFERENCE ===
+
+Health insurance: Anthem (medical), Delta Dental, VSP (vision). Open enrollment in November.
+401(k): Fidelity. 4% company match, vests over 2 years. Enroll via Workday.
+Learning budget: $1,500/year per employee for courses, books, conferences.
+  Submit requests: Workday > Learning & Development > Reimbursement Request
+Gym stipend: $50/month. Submit receipts in Workday.
+Home office stipend (new hires): $500 one-time, submit within 90 days of start date.

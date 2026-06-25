@@ -1,0 +1,69 @@
+HR Policy Manual — Acme Corp
+Last updated: Q1 2025
+Document owner: People Operations
+
+=== WORK FROM HOME POLICY ===
+
+Employees may work remotely up to 3 days per week. Remote days must be agreed with your
+direct manager at the start of each month. Core collaboration hours are 10:00 AM – 3:00 PM
+in the team's primary timezone; attendance at scheduled meetings during this window is
+required regardless of location.
+
+Equipment: the company provides a laptop and one external monitor. A $50/month internet
+stipend is reimbursed via Workday on the 25th of each month; submit receipts by the 20th.
+
+Exceptions: roles designated "office-required" (reception, lab operations, facilities) are not
+eligible. Employees on a performance improvement plan must work on-site for the duration
+of the plan.
+
+=== PAID TIME OFF (PTO) ===
+
+Full-time employees accrue PTO at the following rates:
+  Year 1-2:  15 days/year (1.25 days/month)
+  Year 3-5:  20 days/year (1.67 days/month)
+  Year 6+:   25 days/year (2.08 days/month)
+
+PTO requests must be submitted in Workday at least 5 business days in advance for
+durations of 3 days or more. Same-day requests require manager approval via Slack before
+8:00 AM. Maximum rollover is 5 days per calendar year; unused days beyond 5 are forfeited
+on January 1.
+
+Sick leave is separate from PTO: 10 days per year, non-accruing, non-rollover.
+
+=== PARENTAL LEAVE ===
+
+Primary caregiver: 16 weeks fully paid, starting from the date of birth or adoption.
+Secondary caregiver: 4 weeks fully paid, to be taken within 12 months of birth/adoption.
+Leave must be coordinated with HR at least 8 weeks in advance where possible.
+
+=== PERFORMANCE REVIEW CYCLE ===
+
+Reviews occur twice per year: mid-year (July) and year-end (December).
+  Self-assessment due: last Friday of June / last Friday of November
+  Manager review due: 2 weeks after self-assessment
+  Calibration sessions: held the following week (People Ops will schedule)
+  Outcomes communicated to employees: within 30 days of calibration
+
+Ratings use a 4-level scale: Exceeds Expectations / Meets Expectations / Developing /
+Underperforming. Compensation adjustments are tied to year-end ratings only.
+
+=== EXPENSE REIMBURSEMENT ===
+
+Submit expenses in Workday within 30 days of incurring them. Approvals:
+  Up to $500: direct manager
+  $500-$2,000: VP-level approval
+  Over $2,000: CFO approval required
+
+Team meals: up to $40/person. Client entertainment: up to $100/person with prior approval.
+Alcohol may not be expensed separately; it must be incidental to a meal.
+
+=== ONBOARDING ===
+
+New hires have a 90-day onboarding period. Key milestones:
+  Day 1: IT setup, badge activation, HR orientation (9 AM, Room 201)
+  Week 1: meet your team and complete mandatory training modules in Workday
+  Day 30: 30-day check-in with manager
+  Day 90: end-of-onboarding review; probation period ends (if applicable)
+
+Your onboarding buddy is assigned by People Ops before your start date.
+Reach out to hr@acmecorp.com for any questions during the process.
