@@ -8,7 +8,7 @@ flowchart TB
         SRC["Source Documents\n(PDF · MD · TXT)"] --> PARSE["Parser\n(PyPDF2 / plain text)"]
         PARSE --> CHUNK["Chunker\n(512 chars, 64 overlap)\nRecursiveCharacterSplitter"]
         CHUNK --> EMB1["Embedder\n(all-MiniLM-L6-v2)\n384-dim vectors, local"]
-        EMB1 --> VDB[("ChromaDB\nper-department collection\ncosine index")]
+        EMB1 --> VDB[("Vector store\nFAISS (prototype) /\nWeaviate·Pinecone (prod)\ncosine index")]
     end
 
     subgraph QRY["Query Pipeline (real-time)"]
@@ -33,7 +33,7 @@ flowchart TB
 1. Employee submits a question through the chat UI or REST API.
 2. FastAPI validates the JWT, extracts `{user_id, department, role}` from claims.
 3. The query is embedded with the same model used at ingestion time (critical — model must match).
-4. ChromaDB receives the query vector plus a metadata filter derived from the user's claims, ensuring they only see documents their role permits.
+4. The vector store receives the query vector plus a metadata filter derived from the user's claims, ensuring they only see documents their role permits. (The prototype uses FAISS, a pure vector index; the metadata-filter step is a production capability provided by Weaviate/Pinecone/Chroma — see the note in section 6.)
 5. Top-k chunks are retrieved by cosine similarity. In production a cross-encoder re-ranker would rescore these; the prototype skips re-ranking to reduce dependencies.
 6. Retrieved chunks are injected into a structured prompt alongside the last 3 turns of conversation history.
 7. The LLM generates a grounded response. System-prompt instructions prohibit it from going beyond the supplied context.
@@ -55,7 +55,7 @@ Retrieval happens before any LLM call — this is non-negotiable. Asking the LLM
 | Parse | PyPDF2 (PDF), plain text (.txt/.md) | Handles the common formats; Unstructured.io would replace this in production for tables, embedded images |
 | Chunk | `RecursiveCharacterTextSplitter` | 512 chars, 64 overlap |
 | Embed | `sentence-transformers/all-MiniLM-L6-v2` | Local, zero per-token cost |
-| Store | ChromaDB, cosine index, per-dept collection | See section 6 for namespace rationale |
+| Store | FAISS (prototype) / Weaviate·Pinecone (prod), cosine index | See section 6 for namespace rationale |
 
 ### Chunking rationale
 
@@ -77,7 +77,7 @@ The 64-char overlap prevents a fact from being split across chunk boundaries (e.
 
 ### Prototype: dense vector search only
 
-- Query embedded → cosine similarity against ChromaDB → top-5 chunks above threshold (0.4).
+- Query embedded → cosine similarity against the FAISS index → top-5 chunks above threshold (0.35).
 - Simple, easy to reason about, sufficient for a demo.
 
 ### Production: hybrid retrieval
@@ -143,7 +143,7 @@ Two layers of defence:
 ```
 Request → JWT validation (FastAPI middleware)
        → decode claims: {user_id, department, role, clearance_level}
-       → ChromaDB query includes metadata filter:
+       → vector-store query includes metadata filter:
            {"department": {"$in": [user.department, "all"]},
             "access_level": {"$lte": user.clearance_level}}
        → only matching chunks are candidates for retrieval
@@ -171,18 +171,20 @@ Prompt injection attacks can instruct the LLM to "ignore previous instructions a
 
 | Approach | Isolation | Operational cost |
 |---|---|---|
-| Separate ChromaDB collection per department | Strong — no query can cross collections | N collections to manage, harder to do cross-dept queries |
+| Separate collection per department | Strong — no query can cross collections | N collections to manage, harder to do cross-dept queries |
 | Single collection with metadata filter | Weaker — filter must not be bypassable | Simple operations, easy cross-dept search for admins |
 
 ### Decision for this design
 
 **Metadata filtering within a single collection** for a 500–2,000 employee company with 5–15 departments. At this scale:
-- The corpus fits comfortably in a single ChromaDB instance.
+- The corpus fits comfortably in a single vector-store instance.
 - Cross-department search (e.g., an admin querying across HR and Legal) is valuable and easy.
 - Filter bypass risk is mitigated by enforcing the filter server-side, never accepting filter overrides from user input.
+
+> **Prototype caveat**: this metadata-filter strategy requires a vector store with native metadata filtering (Weaviate, Pinecone, Chroma). The prototype uses FAISS, a pure vector index with no metadata filtering — so the prototype stores a `department` field on each chunk but cannot enforce it at query time. Moving to a metadata-aware store is the first step toward enabling real access control.
 
 **Separate collections** would be the right choice for regulated-industry tenants (healthcare, finance) where legal isolation requirements exist, or for a true SaaS deployment serving multiple companies.
 
 ### What the prototype does
 
-Single collection named `"default"` with a `department` metadata field. The query pipeline accepts a `department` parameter (would come from JWT in production) and could filter on it — the filter logic is in place in the retrieval call; the prototype just doesn't enforce it by default to keep the demo simple.
+A single FAISS index named `"default"`, with a `department` metadata field stored on every chunk. The query pipeline (and API) accepts a `department` parameter that would come from the JWT in production. Because FAISS has no native metadata filtering, the prototype carries the field but does not filter on it — enforcing it is gated on swapping to a metadata-aware store (Weaviate/Pinecone/Chroma), which is called out as a production step.

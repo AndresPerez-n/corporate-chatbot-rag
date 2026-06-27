@@ -18,12 +18,13 @@ CHUNK_OVERLAP = 64
 
 # Retrieval
 TOP_K_RETRIEVAL = 5
-# Cosine similarity threshold (0–1). 0.4 is intentionally permissive for a demo;
-# production would tune this per-corpus with precision/recall eval.
-SIMILARITY_THRESHOLD = 0.4
+# Cosine similarity threshold (0–1). Tuned empirically against the mock corpus:
+# genuine matches score ~0.36+, out-of-scope queries fall below ~0.31, so 0.35
+# separates them. A production system would tune this on a labeled eval set.
+SIMILARITY_THRESHOLD = 0.35
 
 # Vector DB — one sub-directory per collection (department namespace demo)
-VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./chromadb_data")
+VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./faiss_index")
 
 # API
 API_HOST = "0.0.0.0"

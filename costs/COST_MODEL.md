@@ -78,10 +78,10 @@ A simple query classifier (embedding cosine similarity to a set of "simple query
 
 | Option | Storage | Queries | Total |
 |---|---|---|---|
-| ChromaDB (self-hosted, included in server) | $0 | $0 | $0 |
+| FAISS / Chroma (self-hosted, included in server) | $0 | $0 | $0 |
 | Pinecone serverless | 100,000 × 384d × 4B = 153MB → ~$0.01 | 90,000 × 5 reads / 1M × $0.40 = $0.18 | ~$5/month |
 
-Prototype uses ChromaDB. Pinecone adds managed scalability and backups for $5/month — worth it in production.
+Prototype uses FAISS (self-hosted, $0). Production would move to a metadata-aware store — self-hosted Chroma/Weaviate stays at ~$0 infra beyond the host, or Pinecone adds managed scalability, metadata filtering, and backups for ~$5/month.
 
 ### Hosting
 
