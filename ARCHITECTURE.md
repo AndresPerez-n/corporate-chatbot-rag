@@ -1,5 +1,18 @@
 # Architecture Overview — Corporate RAG Chatbot
 
+> **Rendered diagrams** (open in a browser): [`docs/architecture.html`](docs/architecture.html) — the prototype's current flow · [`docs/architecture-production.html`](docs/architecture-production.html) — the production "big solution". The Mermaid diagram below renders inline on GitHub.
+
+## TL;DR
+
+- **Query flow:** user → API (auth) → embed query → vector search → (re-rank) → inject top-k chunks into prompt → LLM → answer + citations.
+- **Ingestion:** documents → parse → chunk (512 chars, 64 overlap) → embed (MiniLM) → store in vector index.
+- **Retrieval:** dense vector search now; hybrid (BM25 + vector) + cross-encoder re-rank is the production design.
+- **Access control:** enforced at the **retrieval layer** (metadata filter), never by asking the LLM to hide docs — that's not a security boundary.
+- **Multi-tenancy:** single index + per-document `department`/`access_level` metadata filter; separate collections only for regulated isolation.
+- **Prototype caveat:** FAISS (pure vector index) has no metadata filtering, so access control needs a metadata-aware store (Weaviate/Pinecone/Chroma) in production.
+
+Each section below expands one of these points.
+
 ## System Diagram
 
 ```mermaid
@@ -8,7 +21,7 @@ flowchart TB
         SRC["Source Documents\n(PDF · MD · TXT)"] --> PARSE["Parser\n(PyPDF2 / plain text)"]
         PARSE --> CHUNK["Chunker\n(512 chars, 64 overlap)\nRecursiveCharacterSplitter"]
         CHUNK --> EMB1["Embedder\n(all-MiniLM-L6-v2)\n384-dim vectors, local"]
-        EMB1 --> VDB[("ChromaDB\nper-department collection\ncosine index")]
+        EMB1 --> VDB[("Vector store\nFAISS (prototype) /\nWeaviate·Pinecone (prod)\ncosine index")]
     end
 
     subgraph QRY["Query Pipeline (real-time)"]
@@ -16,10 +29,11 @@ flowchart TB
         UI --> AUTH{{"JWT Auth\n+ ACL filter"}}
         AUTH --> EMB2["Embedder\n(same model)"]
         EMB2 --> VDB
-        VDB --> RET["Top-k retrieval\n(cosine sim, k=5\nscore ≥ 0.4)"]
+        VDB --> RET["Top-k retrieval\n(cosine sim, k=5\nscore ≥ 0.35)"]
         RET --> RERANK["Re-ranker\n(cross-encoder)\n⚠ production only"]
         RERANK --> LLM["LLM\n(GPT-4o)"]
-        LLM --> RESP["Response\n+ source citations"]
+        LLM --> FAITH["Faithfulness\nself-check\n(optional)"]
+        FAITH --> RESP["Response\n+ source citations\n+ confidence"]
         RESP --> USR
     end
 ```
@@ -33,7 +47,7 @@ flowchart TB
 1. Employee submits a question through the chat UI or REST API.
 2. FastAPI validates the JWT, extracts `{user_id, department, role}` from claims.
 3. The query is embedded with the same model used at ingestion time (critical — model must match).
-4. ChromaDB receives the query vector plus a metadata filter derived from the user's claims, ensuring they only see documents their role permits.
+4. The vector store receives the query vector plus a metadata filter derived from the user's claims, ensuring they only see documents their role permits. (The prototype uses FAISS, a pure vector index; the metadata-filter step is a production capability provided by Weaviate/Pinecone/Chroma — see the note in section 6.)
 5. Top-k chunks are retrieved by cosine similarity. In production a cross-encoder re-ranker would rescore these; the prototype skips re-ranking to reduce dependencies.
 6. Retrieved chunks are injected into a structured prompt alongside the last 3 turns of conversation history.
 7. The LLM generates a grounded response. System-prompt instructions prohibit it from going beyond the supplied context.
@@ -55,7 +69,7 @@ Retrieval happens before any LLM call — this is non-negotiable. Asking the LLM
 | Parse | PyPDF2 (PDF), plain text (.txt/.md) | Handles the common formats; Unstructured.io would replace this in production for tables, embedded images |
 | Chunk | `RecursiveCharacterTextSplitter` | 512 chars, 64 overlap |
 | Embed | `sentence-transformers/all-MiniLM-L6-v2` | Local, zero per-token cost |
-| Store | ChromaDB, cosine index, per-dept collection | See section 6 for namespace rationale |
+| Store | FAISS (prototype) / Weaviate·Pinecone (prod), cosine index | See section 6 for namespace rationale |
 
 ### Chunking rationale
 
@@ -77,7 +91,7 @@ The 64-char overlap prevents a fact from being split across chunk boundaries (e.
 
 ### Prototype: dense vector search only
 
-- Query embedded → cosine similarity against ChromaDB → top-5 chunks above threshold (0.4).
+- Query embedded → cosine similarity against the FAISS index → top-5 chunks above threshold (0.35).
 - Simple, easy to reason about, sufficient for a demo.
 
 ### Production: hybrid retrieval
@@ -143,7 +157,7 @@ Two layers of defence:
 ```
 Request → JWT validation (FastAPI middleware)
        → decode claims: {user_id, department, role, clearance_level}
-       → ChromaDB query includes metadata filter:
+       → vector-store query includes metadata filter:
            {"department": {"$in": [user.department, "all"]},
             "access_level": {"$lte": user.clearance_level}}
        → only matching chunks are candidates for retrieval
@@ -171,18 +185,61 @@ Prompt injection attacks can instruct the LLM to "ignore previous instructions a
 
 | Approach | Isolation | Operational cost |
 |---|---|---|
-| Separate ChromaDB collection per department | Strong — no query can cross collections | N collections to manage, harder to do cross-dept queries |
+| Separate collection per department | Strong — no query can cross collections | N collections to manage, harder to do cross-dept queries |
 | Single collection with metadata filter | Weaker — filter must not be bypassable | Simple operations, easy cross-dept search for admins |
 
 ### Decision for this design
 
 **Metadata filtering within a single collection** for a 500–2,000 employee company with 5–15 departments. At this scale:
-- The corpus fits comfortably in a single ChromaDB instance.
+- The corpus fits comfortably in a single vector-store instance.
 - Cross-department search (e.g., an admin querying across HR and Legal) is valuable and easy.
 - Filter bypass risk is mitigated by enforcing the filter server-side, never accepting filter overrides from user input.
+
+> **Prototype caveat**: this metadata-filter strategy requires a vector store with native metadata filtering (Weaviate, Pinecone, Chroma). The prototype uses FAISS, a pure vector index with no metadata filtering — so the prototype stores a `department` field on each chunk but cannot enforce it at query time. Moving to a metadata-aware store is the first step toward enabling real access control.
 
 **Separate collections** would be the right choice for regulated-industry tenants (healthcare, finance) where legal isolation requirements exist, or for a true SaaS deployment serving multiple companies.
 
 ### What the prototype does
 
-Single collection named `"default"` with a `department` metadata field. The query pipeline accepts a `department` parameter (would come from JWT in production) and could filter on it — the filter logic is in place in the retrieval call; the prototype just doesn't enforce it by default to keep the demo simple.
+A single FAISS index named `"default"`, with a `department` metadata field stored on every chunk. The query pipeline (and API) accepts a `department` parameter that would come from the JWT in production. Because FAISS has no native metadata filtering, the prototype carries the field but does not filter on it — enforcing it is gated on swapping to a metadata-aware store (Weaviate/Pinecone/Chroma), which is called out as a production step.
+
+---
+
+## 7. Production Quality, Experimentation & Rollout
+
+> See [`docs/architecture-production.html`](docs/architecture-production.html) for the diagram of everything in this section.
+
+How we keep the system trustworthy in production and decide which version to ship.
+
+### Observability: feedback loop + feedback table
+
+- Every response carries a **thumbs up/down** control (already implemented in the prototype via `/feedback`).
+- In production each rating is written to a **feedback table** in the metrics DB with the full context: `timestamp, user_id, department, query, retrieved_chunks, response, model_variant, rating, comment`.
+- This table is the human-signal source of truth — it powers dashboards, flags regressions, and seeds the QA golden set (a thumbs-down is a candidate test case).
+
+### Automated reliability testing: QA suite of predetermined Q&A
+
+A **golden dataset** of curated `(question, expected_answer, expected_source)` triples — built from real, known-good answers across HR, technical, and project-wiki topics. On every change (prompt edit, model swap, reranker tweak) a CI job runs the suite and scores, automatically:
+- **Retrieval**: did the expected source land in top-k? (context recall/precision)
+- **Faithfulness**: is every claim supported by the retrieved context? (our `check_faithfulness`, RAGAS-style)
+- **Answer correctness**: does the answer match the expected one? (LLM-as-judge + string/semantic match)
+
+A change that drops any metric below threshold **fails the build** — it never reaches users. This is the automated, repeatable measure of "are answers still reliable?" that replaces eyeballing.
+
+### Production metrics database (live performance)
+
+A **Postgres/warehouse** store captures live operational data per query: latency (end-to-end + per component), tokens/cost, retrieval scores, faithfulness score, cache hit/miss, model variant, and the feedback rating. This is what makes production *measurable* — trends over time, per-topic quality (e.g. "Product Delays" answers scoring low), cost per department, and the inputs to A/B decisions.
+
+### A/B deployment for production experimentation
+
+Two (or more) variants run side by side — e.g. variant A = GPT-4o + current prompt, variant B = GPT-4o + reranker + new prompt. An **A/B router** assigns each session to a variant; results land in the metrics DB tagged by variant. After enough traffic we compare faithfulness, thumbs-up rate, latency, and cost, then **promote the winning variant** to default. This turns "which chatbot is best?" into a measured decision instead of an opinion.
+
+### Phased rollout — start with a 10-user pilot
+
+We do **not** go straight to all employees. The sequence:
+
+1. **Pilot (10 representative users)** — a small panel spanning the departments the bot serves (e.g. HR, Engineering, Product, Operations). They use it on real questions; we collect feedback + metrics intensively and fix the obvious failures. Low blast radius, high signal.
+2. **A/B expansion** — widen access and run variants head-to-head on real traffic to pick the best configuration.
+3. **Graduated rollout** — ramp to the full company once pilot + A/B metrics clear the quality and cost bars, keeping the QA suite as the always-on regression gate.
+
+This staged approach contains risk (the "eat rocks" / fake-discount failure modes happen in production, not in tests) and means real operations only start once the system has proven itself on a controlled sample.

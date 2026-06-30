@@ -10,7 +10,7 @@ langchain-openai==0.1.23
 openai==1.51.0
 
 # Vector store
-chromadb==0.5.15
+faiss-cpu==1.9.0
 
 # Embeddings (local, no API cost)
 sentence-transformers==3.1.1

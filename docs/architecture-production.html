@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Corporate RAG Chatbot — Production Architecture</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --text:#e6e8ec; --muted:#9aa0ad; --accent:#4fd1c5; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); min-height: 100vh;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex; flex-direction: column; align-items: center; padding: 32px;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; font-weight: 700; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; max-width: 900px; text-align: center; }
+  .card {
+    background: var(--panel); border-radius: 16px; padding: 28px 36px;
+    box-shadow: 0 8px 40px rgba(0,0,0,.4); max-width: 1480px; width: 100%;
+  }
+  .legend { display: flex; gap: 22px; justify-content: center; margin-top: 20px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .dot { width: 12px; height: 12px; border-radius: 3px; }
+  .mermaid { display: flex; justify-content: center; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 22px; text-align: center; max-width: 1000px; }
+  .badge { color: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>Corporate RAG Chatbot — Production Architecture</h1>
+  <div class="sub">The target "big solution." The shipped prototype implements the highlighted core path (embed → retrieve → gate → LLM → faithfulness → answer); everything else is the production build-out.</div>
+
+  <div class="card">
+    <pre class="mermaid">
+flowchart LR
+
+  %% ---------- CLIENTS ----------
+  subgraph CLIENT["Clients"]
+    direction TB
+    WEB["React widget<br/>(intranet)"]
+    SLACK["Slack bot"]
+  end
+
+  %% ---------- GATEWAY / AUTH ----------
+  subgraph GW["API Gateway"]
+    direction TB
+    API["FastAPI"]
+    IDP["Identity Provider<br/>(Okta) -> JWT"]
+    RL["Rate limiting"]
+    API --- IDP
+    API --- RL
+  end
+
+  %% ---------- INGESTION (event-driven) ----------
+  subgraph ING["Ingestion - event-driven / scheduled"]
+    direction TB
+    CONN["Connectors<br/>Confluence · SharePoint · GDrive"]
+    QUEUE["Message queue"]
+    WORK["Ingestion workers"]
+    PARSE["Parse<br/>Unstructured.io<br/>(tables · OCR)"]
+    CHUNK2["Chunk + tag<br/>access_level · dept"]
+    EMB1["Embed<br/>MiniLM · GPU batch"]
+    CONN --> QUEUE --> WORK --> PARSE --> CHUNK2 --> EMB1
+  end
+
+  %% ---------- RETRIEVAL + GENERATION ----------
+  subgraph CORE["Retrieval + Generation - real-time"]
+    direction TB
+    ACL{{"ACL filter<br/>from JWT claims"}}
+    EMBQ["Embed query"]
+    HYB["Hybrid retrieval<br/>BM25 + vector -> RRF"]
+    RERANK["Cross-encoder<br/>re-rank"]
+    CACHE{{"Semantic cache<br/>hit?"}}
+    ABROUTER{{"A/B router<br/>variant A vs B"}}
+    ROUTER["Router LLM<br/>(model tiering)"]
+    LLMS["GPT-4o-mini (simple)<br/>GPT-4o (complex)"]
+    FAITH["Faithfulness<br/>self-check"]
+    CITE["Citation<br/>attribution"]
+    EMBQ --> ACL --> HYB --> RERANK --> CACHE
+    CACHE -->|miss| ABROUTER --> ROUTER --> LLMS --> FAITH --> CITE
+    CACHE -->|hit| CITE
+  end
+
+  %% ---------- STORES ----------
+  subgraph STORE["Stores"]
+    direction TB
+    VDB[("Vector DB<br/>Weaviate / Pinecone<br/>metadata filter · HNSW")]
+    REDIS[("Redis<br/>cache + sessions")]
+    OBJ[("Object storage<br/>raw documents")]
+    METRICS[("Production metrics DB<br/>Postgres / warehouse<br/>live perf + feedback table")]
+  end
+
+  %% ---------- OBSERVABILITY / EVAL / EXPERIMENTATION ----------
+  subgraph OBS["Observability · Eval · Experimentation"]
+    direction TB
+    PHX["LLM observability<br/>Phoenix / Langfuse<br/>traces · cost · latency"]
+    QA["QA regression suite<br/>golden Q&amp;A · expected answers<br/>faithfulness + correctness<br/>(CI gate on every change)"]
+    FB["Thumbs up/down<br/>feedback (feedback table)"]
+    AB["A/B experiments<br/>compare variants -> pick winner"]
+    DASH["Dashboards<br/>Datadog / Grafana"]
+  end
+
+  %% ---------- edges between groups ----------
+  WEB --> API
+  SLACK --> API
+  API --> EMBQ
+  CITE --> API --> WEB
+
+  EMB1 --> VDB
+  HYB -. query .-> VDB
+  ACL -. enforce .-> VDB
+  CACHE -. lookup .-> REDIS
+  CITE -. fetch text .-> OBJ
+
+  CORE -. traces .-> PHX
+  CORE -. live perf .-> METRICS
+  FB --> METRICS
+  METRICS --> DASH
+  METRICS --> AB
+  QA -. blocks bad deploys .-> ABROUTER
+  AB -. selects winning variant .-> ABROUTER
+
+  %% ---------- styles ----------
+  classDef client fill:#2b2440,stroke:#b794f6,color:#efe6ff;
+  classDef gw fill:#3a1c2e,stroke:#f687b3,color:#ffe6f1;
+  classDef ing fill:#1c3a44,stroke:#4fd1c5,color:#e6f7f5;
+  classDef core fill:#27314a,stroke:#7aa2f7,color:#e8edff;
+  classDef store fill:#3a2f1c,stroke:#f6ad55,color:#fff3e0;
+  classDef obs fill:#1c3a2a,stroke:#68d391,color:#e6fff0;
+
+  class WEB,SLACK client;
+  class API,IDP,RL gw;
+  class CONN,QUEUE,WORK,PARSE,CHUNK2,EMB1 ing;
+  class ACL,EMBQ,HYB,RERANK,CACHE,ABROUTER,ROUTER,LLMS,FAITH,CITE core;
+  class VDB,REDIS,OBJ,METRICS store;
+  class PHX,QA,FB,AB,DASH obs;
+    </pre>
+
+    <div class="legend">
+      <span><span class="dot" style="background:#b794f6"></span>Clients</span>
+      <span><span class="dot" style="background:#f687b3"></span>Gateway / Auth</span>
+      <span><span class="dot" style="background:#4fd1c5"></span>Ingestion</span>
+      <span><span class="dot" style="background:#7aa2f7"></span>Retrieval + Generation</span>
+      <span><span class="dot" style="background:#f6ad55"></span>Stores</span>
+      <span><span class="dot" style="background:#68d391"></span>Observability / Eval / Experimentation</span>
+    </div>
+  </div>
+
+  <footer>
+    Production deltas vs. the prototype: event-driven ingestion · metadata-aware vector store enabling
+    <span class="badge">JWT access control at the retrieval layer</span> · hybrid retrieval + cross-encoder re-rank ·
+    <span class="badge">model tiering</span> + semantic cache · LLM-observability tracing · a
+    <span class="badge">QA regression suite</span> (predetermined Q&amp;A) gating deploys · a
+    <span class="badge">production metrics DB</span> for live performance + feedback · and
+    <span class="badge">A/B experiments</span> to select the best variant.
+    <br/><br/>
+    Rollout: start with a <span class="badge">pilot of 10 representative employees</span> (across HR, Eng, Product)
+    before real operations, then A/B between variants, then graduated rollout to all staff.
+  </footer>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "dark",
+    flowchart: { curve: "basis", nodeSpacing: 40, rankSpacing: 65 },
+    securityLevel: "loose",
+  });
+</script>
+</body>
+</html>

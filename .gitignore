@@ -29,7 +29,8 @@ ENV/
 env/
 
 # IDE
-.vscode/
+.vscode/*
+!.vscode/launch.json
 .idea/
 *.swp
 *.swo
@@ -45,6 +46,12 @@ data/
 .DS_Store
 mock_documents/
 
-# Generated vector store (created at runtime by ChromaDB)
+# Generated vector store (created at runtime by FAISS)
+faiss_index/
+prototype/faiss_index/
 chromadb_data/
 prototype/chromadb_data/
+
+# Runtime feedback log
+feedback_log.jsonl
+prototype/feedback_log.jsonl

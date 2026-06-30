@@ -1,0 +1,54 @@
+{
+  // Debug/run configurations for the Corporate RAG Chatbot prototype.
+  // Each runs from the prototype/ directory and loads prototype/.env.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API server (uvicorn + reload)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["api:app", "--reload", "--port", "8000"],
+      "cwd": "${workspaceFolder}/prototype",
+      "python": "${workspaceFolder}/prototype/venv/Scripts/python.exe",
+      "envFile": "${workspaceFolder}/prototype/.env",
+      "env": { "HF_HUB_DISABLE_SYMLINKS_WARNING": "1" },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "CLI demo (main.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/prototype/main.py",
+      "cwd": "${workspaceFolder}/prototype",
+      "python": "${workspaceFolder}/prototype/venv/Scripts/python.exe",
+      "envFile": "${workspaceFolder}/prototype/.env",
+      "env": { "HF_HUB_DISABLE_SYMLINKS_WARNING": "1" },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Test: retrieval (no API key)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/prototype/test_retrieval.py",
+      "cwd": "${workspaceFolder}/prototype",
+      "python": "${workspaceFolder}/prototype/venv/Scripts/python.exe",
+      "env": { "HF_HUB_DISABLE_SYMLINKS_WARNING": "1" },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Test: API smoke (no API key)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/prototype/test_api.py",
+      "cwd": "${workspaceFolder}/prototype",
+      "python": "${workspaceFolder}/prototype/venv/Scripts/python.exe",
+      "env": { "HF_HUB_DISABLE_SYMLINKS_WARNING": "1" },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}
