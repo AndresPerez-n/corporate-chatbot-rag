@@ -15,7 +15,7 @@ not LLM hallucination.
 - **Stack:** FastAPI · LangChain · FAISS · local MiniLM embeddings · GPT-4o. Vanilla-JS streaming chat UI.
 - **Works today:** ingestion → chunk → embed → retrieve → grounded answer with citations; streaming, conversation memory, thumbs up/down feedback. Verified end-to-end.
 - **Deliberately deferred (designed, not built):** JWT auth + role-based access, hybrid/re-rank retrieval, eval harness — see [ARCHITECTURE.md](ARCHITECTURE.md).
-- **Cost:** ~$283/month for 1,000 employees (tiered models + caching). See [COST_MODEL.md](costs/COST_MODEL.md).
+- **Cost:** ~$278/month for 1,000 employees (tiered models + caching, self-hosted vector DB); the 3-month agentic target is ~$615/month. See [COST_MODEL.md](costs/COST_MODEL.md).
 - **Run it:** add a key to `prototype/.env`, then `uvicorn api:app --port 8000` → open http://localhost:8000.
 
 ---
@@ -99,10 +99,7 @@ corporate-chatbot-rag/
 │       ├── hr_policy.txt
 │       ├── tech_docs.txt
 │       └── project_wiki.txt
-├── ARCHITECTURE.md        # System design, diagrams, all 6 required topics
-├── docs/
-│   ├── architecture.html             # Rendered diagram — prototype (current) flow
-│   └── architecture-production.html   # Rendered diagram — production "big solution"
+├── ARCHITECTURE.md        # System design + inline Mermaid diagrams (C4-style), all 6 required topics
 ├── .vscode/launch.json    # Debug configs (API server, CLI demo, tests)
 └── costs/
     └── COST_MODEL.md      # Cost breakdown with assumptions and math
@@ -128,7 +125,7 @@ Chosen over alternatives for:
 ### Vector DB: FAISS (local)
 
 - Zero setup, persists to disk, runs in-process. Pure vector index — fast and dependency-light, with pre-built wheels on every platform (ChromaDB was the original choice but its native extension fails to build on Windows/Python 3.12 without C++ build tools; FAISS avoids that).
-- Production path: **Weaviate** (self-hosted, strong metadata filtering) or **Pinecone** (fully managed, ~$5/month at this scale). The retrieval interface is the same — swapping is a config change.
+- Production path: **Weaviate** (self-hosted, strong metadata filtering, ~$0 beyond the host) or **Pinecone** (fully managed, but its Standard plan has a ~$50/month floor — usage at this scale is under $1, so you're paying the floor). The retrieval interface is the same — swapping is a config change.
 - Key limitation FAISS does **not** solve, and why production needs a metadata-aware store: FAISS is a pure vector index with no native metadata filtering. The access-control and multi-tenancy design (see [ARCHITECTURE.md](ARCHITECTURE.md)) depends on server-side metadata filters at query time, which Weaviate/Pinecone/Chroma provide and FAISS does not.
 
 ### Orchestration: LangChain
@@ -266,13 +263,18 @@ All system-level metrics use **LLM-as-a-judge** under the hood (the LLM's role i
 
 ### 3-month production-ready build
 
+**Agentic, multi-knowledge-base redesign** (the headline change — see [ARCHITECTURE.md §8](ARCHITECTURE.md), with container + agentic-core diagrams):
+- Conversation agent + orchestrator agent, with **one specialized RAG ability per knowledge base** (HR / technical / wiki) plus non-RAG tools
+- Typed Pydantic/JSON hand-offs (`Query` → `AbilityResult` → `Answer`) for formatting + anti-hallucination
+- `UserContext` (role/department/purpose) for personalization and per-ability access scope
+- Two-tier memory: last 5 messages verbatim + summarized long-term history
+
+**Supporting production work:**
 - Hybrid retrieval (BM25 + vector + cross-encoder re-ranking)
 - JWT auth + metadata-filter access control per department
 - Webhook-triggered incremental ingestion from Confluence / SharePoint / Google Drive
-- Langfuse tracing + thumbs-up/down feedback loop
-- Eval harness with golden dataset, run on every PR
+- Phoenix/Langfuse tracing; RAGAS eval harness with golden dataset, run on every PR
 - Slack bot integration (employees ask questions where they already work)
-- Semantic cache (Redis) for repeated FAQ queries
-- Role-based document access levels
+- Semantic cache (Redis); model tiering; quantized embeddings
 - PDF table extraction (Unstructured.io)
-- Load testing and latency benchmarks
+- Load testing and latency benchmarks; A/B experimentation; 10-user pilot rollout
