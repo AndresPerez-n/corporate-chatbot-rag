@@ -250,7 +250,7 @@ Current question: {user_query}"""
             result["faithfulness_warning"] = True
             result["unsupported_claims"] = unsupported
             result["response"] += (
-                "\n\n⚠️ Some statements above may not be fully supported by the "
+                "\n\nNote: some statements above may not be fully supported by the "
                 "knowledge base — please verify before relying on them."
             )
 
@@ -338,4 +338,4 @@ if __name__ == "__main__":
         print(f"Confidence: {result['confidence']} ({result['confidence_level']})")
         if result.get("faithfulness") is not None:
             print(f"Faithfulness: {result['faithfulness']:.2f}"
-                  f"{'  ⚠️ flagged' if result.get('faithfulness_warning') else ''}")
+                  f"{'  [flagged]' if result.get('faithfulness_warning') else ''}")

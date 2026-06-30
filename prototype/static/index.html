@@ -117,14 +117,14 @@ function renderMeta(wrap, meta, userQuery, answerText) {
     const f = document.createElement("span");
     f.className = "badge " + (meta.faithfulness_warning ? "low" : "high");
     f.textContent = meta.faithfulness_warning
-      ? `⚠️ grounding ${meta.faithfulness}`
-      : `✓ grounded ${meta.faithfulness}`;
+      ? `grounding ${meta.faithfulness} — verify`
+      : `grounded ${meta.faithfulness}`;
     m.appendChild(f);
   }
   (meta.sources || []).forEach(s => {
     const el = document.createElement("span");
     el.className = "source";
-    el.textContent = "📄 " + s;
+    el.textContent = s;
     m.appendChild(el);
   });
 

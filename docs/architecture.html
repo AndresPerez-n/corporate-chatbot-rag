@@ -36,7 +36,7 @@
 flowchart LR
 
   %% ---------- INGESTION ----------
-  subgraph ING["📥 INGESTION  ·  offline / scheduled"]
+  subgraph ING["INGESTION  ·  offline / scheduled"]
     direction LR
     SRC["Source docs<br/>PDF · MD · TXT"]
     PARSE["Parse"]
@@ -50,9 +50,9 @@ flowchart LR
   EMB1 --> VDB
 
   %% ---------- QUERY ----------
-  subgraph QRY["⚡ QUERY  ·  real-time"]
+  subgraph QRY["QUERY  ·  real-time"]
     direction LR
-    USR(["👤 Employee"])
+    USR(["Employee"])
     API["FastAPI<br/>+ JWT auth"]
     EMB2["Embed query"]
     RET["Retrieve top-k<br/>cosine ≥ 0.35"]

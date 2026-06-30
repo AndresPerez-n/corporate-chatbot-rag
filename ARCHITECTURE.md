@@ -202,3 +202,44 @@ Prompt injection attacks can instruct the LLM to "ignore previous instructions a
 ### What the prototype does
 
 A single FAISS index named `"default"`, with a `department` metadata field stored on every chunk. The query pipeline (and API) accepts a `department` parameter that would come from the JWT in production. Because FAISS has no native metadata filtering, the prototype carries the field but does not filter on it — enforcing it is gated on swapping to a metadata-aware store (Weaviate/Pinecone/Chroma), which is called out as a production step.
+
+---
+
+## 7. Production Quality, Experimentation & Rollout
+
+> See [`docs/architecture-production.html`](docs/architecture-production.html) for the diagram of everything in this section.
+
+How we keep the system trustworthy in production and decide which version to ship.
+
+### Observability: feedback loop + feedback table
+
+- Every response carries a **thumbs up/down** control (already implemented in the prototype via `/feedback`).
+- In production each rating is written to a **feedback table** in the metrics DB with the full context: `timestamp, user_id, department, query, retrieved_chunks, response, model_variant, rating, comment`.
+- This table is the human-signal source of truth — it powers dashboards, flags regressions, and seeds the QA golden set (a thumbs-down is a candidate test case).
+
+### Automated reliability testing: QA suite of predetermined Q&A
+
+A **golden dataset** of curated `(question, expected_answer, expected_source)` triples — built from real, known-good answers across HR, technical, and project-wiki topics. On every change (prompt edit, model swap, reranker tweak) a CI job runs the suite and scores, automatically:
+- **Retrieval**: did the expected source land in top-k? (context recall/precision)
+- **Faithfulness**: is every claim supported by the retrieved context? (our `check_faithfulness`, RAGAS-style)
+- **Answer correctness**: does the answer match the expected one? (LLM-as-judge + string/semantic match)
+
+A change that drops any metric below threshold **fails the build** — it never reaches users. This is the automated, repeatable measure of "are answers still reliable?" that replaces eyeballing.
+
+### Production metrics database (live performance)
+
+A **Postgres/warehouse** store captures live operational data per query: latency (end-to-end + per component), tokens/cost, retrieval scores, faithfulness score, cache hit/miss, model variant, and the feedback rating. This is what makes production *measurable* — trends over time, per-topic quality (e.g. "Product Delays" answers scoring low), cost per department, and the inputs to A/B decisions.
+
+### A/B deployment for production experimentation
+
+Two (or more) variants run side by side — e.g. variant A = GPT-4o + current prompt, variant B = GPT-4o + reranker + new prompt. An **A/B router** assigns each session to a variant; results land in the metrics DB tagged by variant. After enough traffic we compare faithfulness, thumbs-up rate, latency, and cost, then **promote the winning variant** to default. This turns "which chatbot is best?" into a measured decision instead of an opinion.
+
+### Phased rollout — start with a 10-user pilot
+
+We do **not** go straight to all employees. The sequence:
+
+1. **Pilot (10 representative users)** — a small panel spanning the departments the bot serves (e.g. HR, Engineering, Product, Operations). They use it on real questions; we collect feedback + metrics intensively and fix the obvious failures. Low blast radius, high signal.
+2. **A/B expansion** — widen access and run variants head-to-head on real traffic to pick the best configuration.
+3. **Graduated rollout** — ramp to the full company once pilot + A/B metrics clear the quality and cost bars, keeping the QA suite as the always-on regression gate.
+
+This staged approach contains risk (the "eat rocks" / fake-discount failure modes happen in production, not in tests) and means real operations only start once the system has proven itself on a controlled sample.
