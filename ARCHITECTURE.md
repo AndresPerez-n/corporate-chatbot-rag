@@ -1,6 +1,8 @@
 # Architecture Overview — Corporate RAG Chatbot
 
-> **Rendered diagrams** (open in a browser): [`docs/architecture.html`](docs/architecture.html) — the prototype's current flow · [`docs/architecture-production.html`](docs/architecture-production.html) — the production "big solution". The Mermaid diagram below renders inline on GitHub.
+> **This document covers two architectures**: the **current prototype** (what's built and runs today — Sections 1–6) and the **3-month target** (where this goes in production — Sections 7–8). Each prototype section flags what it does *not* do and why.
+>
+> **Diagrams are inline (Mermaid)** and render automatically on GitHub. Following the C4 convention, the system is shown at increasing zoom: the **prototype** flow below (current), then the **3-month target** at two levels — a container view and a zoom into the agentic core (Section 8).
 
 ## TL;DR
 
@@ -10,8 +12,9 @@
 - **Access control:** enforced at the **retrieval layer** (metadata filter), never by asking the LLM to hide docs — that's not a security boundary.
 - **Multi-tenancy:** single index + per-document `department`/`access_level` metadata filter; separate collections only for regulated isolation.
 - **Prototype caveat:** FAISS (pure vector index) has no metadata filtering, so access control needs a metadata-aware store (Weaviate/Pinecone/Chroma) in production.
+- **3-month target (Section 8):** evolves the single-index, single-agent prototype into an **agentic, multi-knowledge-base** system — a conversation agent + orchestrator routing across one specialized RAG ability per knowledge base, with personalization, two-tier memory, and typed (Pydantic/JSON) outputs.
 
-Each section below expands one of these points.
+Sections 1–6 expand the points above (the current prototype). Sections 7–8 cover the 3-month target.
 
 ## System Diagram
 
@@ -207,7 +210,7 @@ A single FAISS index named `"default"`, with a `department` metadata field store
 
 ## 7. Production Quality, Experimentation & Rollout
 
-> See [`docs/architecture-production.html`](docs/architecture-production.html) for the diagram of everything in this section.
+> These production concerns wrap the agentic core shown in Section 8 (Diagram 8a places them in context).
 
 How we keep the system trustworthy in production and decide which version to ship.
 
@@ -243,3 +246,160 @@ We do **not** go straight to all employees. The sequence:
 3. **Graduated rollout** — ramp to the full company once pilot + A/B metrics clear the quality and cost bars, keeping the QA suite as the always-on regression gate.
 
 This staged approach contains risk (the "eat rocks" / fake-discount failure modes happen in production, not in tests) and means real operations only start once the system has proven itself on a controlled sample.
+
+---
+
+## 8. Target Architecture (3-Month): Agentic, Multi-Knowledge-Base
+
+This is the **3-month target**, not the prototype. The prototype (Sections 1–6) is deliberately a single-agent, single-index RAG; this section describes what it grows into. Two diagrams, zoomed in C4 style: first the whole system (container view), then the agentic core (component view).
+
+### Diagram 8a — Container view (the whole system)
+
+```mermaid
+flowchart TB
+    USR["Employee"]
+    GW["API Gateway<br/>FastAPI · Okta JWT · rate limiting"]
+    CORE["Agentic generation core<br/>conversation agent + orchestrator + abilities<br/>(detailed in 8b)"]
+    KBS[("Knowledge bases<br/>HR · Technical · Wiki<br/>one index each")]
+    CACHE[("Redis<br/>semantic cache + sessions")]
+    METRICS[("Metrics DB<br/>live perf + feedback")]
+    ING["Ingestion pipeline<br/>connectors → parse → chunk → embed"]
+    OBS["Observability · Eval · A/B<br/>Phoenix traces · RAGAS QA gate · dashboards"]
+
+    USR -->|question| GW --> CORE
+    CORE -->|answer + citations| GW --> USR
+    CORE --> KBS
+    CORE --> CACHE
+    ING --> KBS
+    CORE -. live perf + traces .-> METRICS
+    CORE -. traces .-> OBS
+    METRICS --> OBS
+```
+
+### Diagram 8b — Agentic core (component view)
+
+```mermaid
+flowchart LR
+    USR["Employee"]
+
+    subgraph CONV["Conversation agent (front door)"]
+        IN["Receive + load context"]
+        TOQ["Transform to Query<br/>(Pydantic)"]
+        REND["Render Answer<br/>personalized reply"]
+    end
+
+    subgraph CTX["Context"]
+        PROF["User profile<br/>role · dept · purpose"]
+        MEM["Memory<br/>last 5 verbatim + summary"]
+    end
+
+    subgraph ORCH["Orchestrator (planner)"]
+        RT{{"Route + cache check<br/>+ ACL from JWT"}}
+        SYN["Faithfulness gate +<br/>synthesize → Answer (Pydantic)"]
+    end
+
+    subgraph ABIL["Abilities — one RAG per knowledge base"]
+        HR["HR ability"]
+        TECH["Technical ability"]
+        WIKI["Wiki ability"]
+        TOOL["Tools (non-RAG)"]
+    end
+
+    USR --> IN --> TOQ -->|Query| RT
+    RT --> HR
+    RT --> TECH
+    RT --> WIKI
+    RT --> TOOL
+    HR -->|result| SYN
+    TECH -->|result| SYN
+    WIKI -->|result| SYN
+    TOOL -->|result| SYN
+    SYN -->|Answer| REND --> USR
+    PROF -. personalize + access .-> IN
+    MEM -. recent + summary .-> TOQ
+```
+
+> Typed hand-offs at every hop — `Query` → `AbilityResult` → `Answer` (Pydantic/JSON) — enforce formatting and make hallucinations checkable (reject/retry on malformed or unsupported output). Routing/transform use small models, synthesis uses a larger one (tiering), keeping the multi-hop cost to ~2.2× the single-call design.
+
+### Why agentic, and why now
+
+The brief explicitly lists **several** distinct knowledge bases — HR policies, technical documentation, project wikis. The prototype flattens them into one index, which is fine for a proof-of-concept but suboptimal: an HR policy question and a database-migration question want different retrieval settings, different prompts, and different access rules.
+
+The target instead models **each knowledge base as its own specialized RAG "ability"** behind an orchestrator. This lets us tune chunking/retrieval/prompt per domain, scope access per ability, and add non-RAG abilities (e.g. "who's on-call?" via an API) without bolting them onto a monolith.
+
+### Two-agent design
+
+**1. Conversation Agent (the front door).** Owns the dialogue with the employee. Responsibilities:
+- Receive the raw user message and hold the conversational context (user profile + history).
+- **Transform the message into a structured query** — a typed `Query` object (Pydantic), not free text.
+- Take the orchestrator's structured answer and **render it into a natural, personalized reply** for the user.
+
+**2. Orchestrator Agent (the planner/router).** Never talks to the user directly. Responsibilities:
+- Receive the structured `Query`.
+- **Route** to the right ability or abilities (e.g. HR ability, technical ability), possibly several in parallel.
+- Collect the candidate answers, run the **faithfulness/grounding gate**, and **select or synthesize** the final structured answer.
+- Return a typed `Answer` object to the conversation agent.
+
+### Abilities / skills (one RAG per knowledge base)
+
+Each ability is a self-contained tool with a typed interface, its own retriever config, its own prompt, and its own access scope:
+
+| Ability | Knowledge base / source | Type |
+|---|---|---|
+| HR ability | HR policy KB | RAG |
+| Technical ability | Engineering docs KB | RAG |
+| Project-wiki ability | Project/wiki KB | RAG |
+| Directory / on-call ability | PagerDuty / HR system | non-RAG tool |
+| Ticketing ability | Jira / ITSM | non-RAG action |
+
+Adding a new domain = adding a new ability, not reworking a monolith.
+
+### End-to-end flow
+
+```
+User message
+  → Conversation Agent  (load user profile + history)
+      → builds Query{intent, text, filters, user_ctx}      (Pydantic)
+  → Orchestrator Agent
+      → routes to ability(ies)
+          → HR ability   → RAG over HR KB        → AbilityResult
+          → Tech ability → RAG over Technical KB → AbilityResult
+      → faithfulness gate + select / synthesize
+      → Answer{text, citations, confidence, faithfulness}   (Pydantic)
+  → Conversation Agent  (render, personalize)
+  → user
+```
+
+This is the **conditional/router workflow** pattern (orchestrator routes; each ability is a tool; an evaluator/citation step finishes), with the conversation agent acting as a dedicated input/output transformer.
+
+### Context system (personalization)
+
+A typed **`UserContext`** travels with every request: `{user_id, role, department, clearance_level, purpose}`. It does two jobs:
+- **Personalization** — the same question yields a role-appropriate answer (an engineer asking about "deployment" vs. someone in HR).
+- **Access control** — role/clearance decides which abilities and which documents are even reachable (the retrieval-layer enforcement from Section 5, now per-ability).
+
+### History management (two-tier)
+
+To keep continuity without unbounded token growth:
+- **Short-term (verbatim):** the **last 5 messages** stay live in the agent's working context.
+- **Long-term (summarized):** everything older is compressed into a rolling **summary history** — a running synopsis the agent carries instead of the full transcript.
+
+This is the prototype's rolling-window idea (Section 4) generalized: recent turns precise, older turns summarized.
+
+### Typed outputs (Pydantic / JSON) for formatting + anti-hallucination
+
+Every hop passes a **validated, typed object** — `Query`, `AbilityResult`, `Answer` — not loose text:
+- **Formatting guarantee:** the final answer always has the same shape (text, citations, confidence, faithfulness), which the UI and downstream systems can rely on.
+- **Hallucination guard:** structured outputs are *checkable* — if the model returns malformed JSON, missing citations, or claims with no supporting chunk, validation **rejects and retries**. Combined with the faithfulness self-check (Section 7 / already prototyped), this is the layered "no hallucination + consistent format" guarantee.
+
+### What this adds over the prototype (and the cost of it)
+
+| Dimension | Prototype (now) | Agentic target (3-month) |
+|---|---|---|
+| Agents | Single RAG call | Conversation agent + orchestrator + N abilities |
+| Knowledge bases | One flat FAISS index | One specialized RAG per KB |
+| Personalization | None | `UserContext` (role/purpose) drives answer + access |
+| Memory | Last-3-turn window | Last-5 verbatim + summarized long-term |
+| I/O | Free-text | Typed Pydantic/JSON at every hop |
+
+The cost is real — multiple LLM hops per query mean more latency and tokens (mitigated by model tiering: small models for routing/transform, larger for synthesis). That overhead only pays off once there are genuinely distinct knowledge bases and personalization needs, which is exactly why it's the **3-month** target and not the prototype.
