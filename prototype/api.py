@@ -34,6 +34,8 @@ class QueryRequest(BaseModel):
     session_id: str = "default"
     # In production this would come from the JWT; here it's a demo field
     department: Optional[str] = None
+    # Override the global FAITHFULNESS_CHECK config per request (e.g. high-stakes query)
+    check_faithfulness: Optional[bool] = None
 
 
 class QueryResponse(BaseModel):
@@ -42,6 +44,8 @@ class QueryResponse(BaseModel):
     confidence: float
     confidence_level: str  # "high" | "medium" | "low" | "out_of_scope" | "unavailable"
     session_id: str
+    faithfulness: Optional[float] = None      # 0-1 groundedness score (if checked)
+    faithfulness_warning: bool = False        # true if below threshold
 
 
 class DocumentInput(BaseModel):
@@ -141,7 +145,7 @@ def query(req: QueryRequest):
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
     bot = get_or_create_session(req.session_id)
-    result = bot.query(req.query)
+    result = bot.query(req.query, check_faithfulness=req.check_faithfulness)
 
     return QueryResponse(
         response=result["response"],
@@ -149,6 +153,8 @@ def query(req: QueryRequest):
         confidence=result["confidence"],
         confidence_level=result["confidence_level"],
         session_id=req.session_id,
+        faithfulness=result.get("faithfulness"),
+        faithfulness_warning=result.get("faithfulness_warning", False),
     )
 
 
@@ -165,7 +171,7 @@ def query_stream(req: QueryRequest):
     bot = get_or_create_session(req.session_id)
 
     def event_generator():
-        for event in bot.query_stream(req.query):
+        for event in bot.query_stream(req.query, check_faithfulness=req.check_faithfulness):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(

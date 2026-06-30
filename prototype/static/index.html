@@ -77,7 +77,11 @@
       <input id="q" placeholder="Ask a question…" autocomplete="off" />
       <button id="send">Send</button>
     </div>
-    <div class="hint">Answers are grounded in the knowledge base and cite their sources. Out-of-scope questions are declined.</div>
+    <div class="hint">
+      Answers are grounded in the knowledge base and cite their sources. Out-of-scope questions are declined.
+      &nbsp;·&nbsp;
+      <label style="cursor:pointer;"><input type="checkbox" id="verify" /> Verify grounding (RAGAS faithfulness, slower)</label>
+    </div>
   </footer>
 
 <script>
@@ -108,6 +112,14 @@ function renderMeta(wrap, meta, userQuery, answerText) {
     b.textContent = meta.confidence != null && meta.confidence > 0
       ? `${label} (${meta.confidence})` : label;
     m.appendChild(b);
+  }
+  if (meta.faithfulness != null) {
+    const f = document.createElement("span");
+    f.className = "badge " + (meta.faithfulness_warning ? "low" : "high");
+    f.textContent = meta.faithfulness_warning
+      ? `⚠️ grounding ${meta.faithfulness}`
+      : `✓ grounded ${meta.faithfulness}`;
+    m.appendChild(f);
   }
   (meta.sources || []).forEach(s => {
     const el = document.createElement("span");
@@ -145,11 +157,12 @@ async function ask(query) {
   let meta = {};
   let answer = "";
   const answerText = () => answer;
+  const verify = document.getElementById("verify").checked;
 
   try {
     const res = await fetch("/query/stream", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, session_id: SESSION_ID })
+      body: JSON.stringify({ query, session_id: SESSION_ID, check_faithfulness: verify })
     });
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -171,6 +184,9 @@ async function ask(query) {
           answer += event.content;
           bubble.textContent = answer;
           chat.scrollTop = chat.scrollHeight;
+        } else if (event.type === "faithfulness") {
+          meta.faithfulness = event.score;
+          meta.faithfulness_warning = event.warning;
         } else if (event.type === "done") {
           renderMeta(wrap, meta, query, answerText);
         }

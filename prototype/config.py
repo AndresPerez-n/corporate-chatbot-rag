@@ -26,6 +26,15 @@ SIMILARITY_THRESHOLD = 0.35
 # Vector DB — one sub-directory per collection (department namespace demo)
 VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./faiss_index")
 
+# Faithfulness self-check (RAGAS-style groundedness pass).
+# A second, cheap LLM call verifies every claim in the answer is supported by the
+# retrieved context. Off by default (adds ~1 LLM call of latency + cost); flip on
+# globally here, or per-query via query(..., check_faithfulness=True).
+FAITHFULNESS_CHECK_ENABLED = os.getenv("FAITHFULNESS_CHECK", "false").lower() == "true"
+FAITHFULNESS_THRESHOLD = 0.5  # below this, the answer is flagged for the user to verify
+# Cheaper model for the judge pass; falls back to LLM_MODEL if unset.
+FAITHFULNESS_MODEL = os.getenv("FAITHFULNESS_MODEL", "gpt-4o-mini")
+
 # API
 API_HOST = "0.0.0.0"
 API_PORT = int(os.getenv("PORT", 8000))

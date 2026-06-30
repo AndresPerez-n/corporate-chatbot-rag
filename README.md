@@ -9,6 +9,15 @@ not LLM hallucination.
 > explicitly documented in [ARCHITECTURE.md](ARCHITECTURE.md) and called out in the code.
 > A thoughtful incomplete design beats a shallow "complete" one.
 
+## TL;DR
+
+- **What it is:** RAG chatbot over internal docs (HR / technical / project wiki), with source citations and out-of-scope refusal.
+- **Stack:** FastAPI · LangChain · FAISS · local MiniLM embeddings · GPT-4o. Vanilla-JS streaming chat UI.
+- **Works today:** ingestion → chunk → embed → retrieve → grounded answer with citations; streaming, conversation memory, thumbs up/down feedback. Verified end-to-end.
+- **Deliberately deferred (designed, not built):** JWT auth + role-based access, hybrid/re-rank retrieval, eval harness — see [ARCHITECTURE.md](ARCHITECTURE.md).
+- **Cost:** ~$283/month for 1,000 employees (tiered models + caching). See [COST_MODEL.md](costs/COST_MODEL.md).
+- **Run it:** add a key to `prototype/.env`, then `uvicorn api:app --port 8000` → open http://localhost:8000.
+
 ---
 
 ## Quick Start
@@ -91,6 +100,9 @@ corporate-chatbot-rag/
 │       ├── tech_docs.txt
 │       └── project_wiki.txt
 ├── ARCHITECTURE.md        # System design, diagrams, all 6 required topics
+├── docs/
+│   ├── architecture.html             # Rendered diagram — prototype (current) flow
+│   └── architecture-production.html   # Rendered diagram — production "big solution"
 ├── .vscode/launch.json    # Debug configs (API server, CLI demo, tests)
 └── costs/
     └── COST_MODEL.md      # Cost breakdown with assumptions and math
@@ -144,8 +156,8 @@ For production: a React chat widget embedded in the company's intranet (Notion, 
 ### Observability
 
 The prototype ships a basic **feedback loop**: `/feedback` logs thumbs up/down (with the query and response) to `feedback_log.jsonl` — the raw signal an eval pipeline would consume. Full tracing is not wired. Production stack:
-- **Langfuse** (open-source): traces every LLM call with latency, token count, and cost; aggregates the thumbs up/down feedback the prototype already collects.
-- **Datadog / CloudWatch**: infra metrics (API latency, error rate, vector DB query time).
+- **LLM-observability platform — Phoenix (Arize)** or **Langfuse** (both open-source): capture **traces** that follow a single query through the whole pipeline (initial prompt → query sent to retriever → chunks returned → reranker → final prompt → generated response → latency at each step). This is what makes "where and why did this answer go wrong?" answerable, and where the RAGAS metrics above get logged per-trace. Also enables **A/B experiments** (does a new system prompt or a reranker actually improve quality?).
+- **Classic infra monitoring — Datadog / Grafana / CloudWatch**: the things an LLM-observability tool doesn't cover — API latency, error rate, memory, vector DB query time.
 
 ---
 
@@ -166,6 +178,14 @@ If no chunk scores above the threshold (0.35), the system returns a "not in know
 - Prevents the LLM from hallucinating an answer from training data.
 - Gives the user a useful redirect (contact HR, check Confluence).
 
+### Faithfulness self-check (RAGAS-style groundedness)
+
+An optional second LLM pass that verifies the generated answer is actually supported by the retrieved context — the output-side complement to the input-side out-of-scope gate. After generation, a cheap judge model (`gpt-4o-mini`, temperature 0) is asked to extract every factual claim and return `{"faithfulness": 0–1, "unsupported_claims": [...]}`. If the score falls below `FAITHFULNESS_THRESHOLD` (0.5), the response is flagged with a "please verify" warning and the unsupported claims are surfaced.
+
+- **Off by default** (it adds one LLM call of latency + cost). Enable globally via `FAITHFULNESS_CHECK=true`, or per request: `query(..., check_faithfulness=True)` / `{"check_faithfulness": true}` on the API, or the **"Verify grounding"** checkbox in the chat UI.
+- Implemented in `CorporateChatbot.check_faithfulness()`; verified both directions — grounded answers score 1.0, a deliberately fabricated answer ("unlimited remote work and a free company car") scores 0.0 and both invented claims are listed.
+- This is the prototype version of the RAGAS `Faithfulness()` metric described in the [Evaluation section](#evaluation-approach); in production the same signal would be logged per-trace rather than blocking the response.
+
 ### Conversation memory
 
 A simple rolling window of the last 3 turns (6 messages) is included in each prompt. This is enough for follow-up questions ("what about part-time employees?") without growing the prompt unboundedly. A production system would persist history to a DB keyed by session ID.
@@ -184,20 +204,33 @@ Each response includes a `confidence_level` field derived from the average cosin
 
 ## Evaluation Approach
 
-How do you know the chatbot is getting better (or worse)?
+How do you know the chatbot is getting better (or worse)? We evaluate along two axes — **scope** (component vs. system) × **evaluator type** (code-based, LLM-as-judge, human feedback):
 
-**Offline eval (before any change ships)**
+| | Code-based (cheap) | LLM-as-judge (flexible) | Human feedback (gold) |
+|---|---|---|---|
+| **Component** (retriever) | retrieval latency, tokens/query | retrieved-document relevance | annotated relevance labels |
+| **System** (end-to-end) | answer latency, valid output | RAGAS faithfulness, citation accuracy | thumbs up/down |
 
-Build a golden dataset: 50–100 (question, expected answer, source document) triples derived from the actual knowledge base. Run the RAG pipeline on each question and score:
-- **Retrieval recall**: did the correct source document appear in the top-k?
-- **Answer faithfulness**: does the generated answer contradict the retrieved context? (Use an LLM-as-judge prompt or a tool like Ragas.)
-- **Answer correctness**: does it match the expected answer? (ROUGE-L for factual questions, LLM judge for open-ended.)
+### Component eval — the retriever
 
-**Online eval (in production)**
+- **Context recall / precision**: build a golden dataset of 50–100 (question → expected source) pairs and check whether the correct chunk lands in top-k. Cheap, code-based, run on every PR.
+- These directly target the "did we retrieve the right thing?" question before the LLM is even involved.
 
-- Thumbs up/down on every response, surfaced in Langfuse.
-- Track the fraction of queries that hit `out_of_scope` — a sudden spike means a new topic isn't covered in the knowledge base.
-- Monitor average retrieval score over time — a drop often means the corpus has drifted (new documents use different terminology).
+### System eval — the generated answer (RAGAS metrics)
+
+Using the [RAGAS](https://docs.ragas.io) library, which the production-RAG canon standardizes on:
+- **Faithfulness**: does every factual claim in the answer trace back to the retrieved context? (Catches hallucination — **implemented** in the prototype as an optional self-check; see [Faithfulness self-check](#faithfulness-self-check-ragas-style-groundedness).)
+- **Response Relevancy**: is the answer actually addressing the question, regardless of correctness?
+- **Citation Quality / Answer Correctness**: do cited sources support the claims; does the answer match the expected one?
+
+All system-level metrics use **LLM-as-a-judge** under the hood (the LLM's role is too nuanced for pure code metrics) — with the known caveat that judges mildly favor their own model family.
+
+### Online eval (production)
+
+- **Thumbs up/down** on every response (already implemented via `/feedback`) — the human-feedback signal an eval pipeline consumes.
+- **Out-of-scope rate**: a spike means a new topic isn't covered in the knowledge base.
+- **Average retrieval score over time**: a drop signals corpus drift (new docs use different terminology).
+- The flywheel: **observe traffic → evaluate performance → experiment with changes** (A/B test prompts, rerankers), then repeat.
 
 ---
 
@@ -226,6 +259,7 @@ Build a golden dataset: 50–100 (question, expected answer, source document) tr
 - [x] Mock data corpus covering HR, technical docs, project wiki
 - [x] Streaming responses (SSE) + minimal chat UI
 - [x] Thumbs up/down feedback loop (logged to JSONL)
+- [x] RAGAS-style faithfulness self-check (optional, toggleable)
 - [ ] Auth (designed in ARCHITECTURE.md, not implemented)
 - [ ] Hybrid retrieval (designed as next step, not implemented)
 - [ ] Role-based access enforcement (needs a metadata-aware vector store)

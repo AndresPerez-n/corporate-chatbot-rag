@@ -1,5 +1,18 @@
 # Architecture Overview — Corporate RAG Chatbot
 
+> **Rendered diagrams** (open in a browser): [`docs/architecture.html`](docs/architecture.html) — the prototype's current flow · [`docs/architecture-production.html`](docs/architecture-production.html) — the production "big solution". The Mermaid diagram below renders inline on GitHub.
+
+## TL;DR
+
+- **Query flow:** user → API (auth) → embed query → vector search → (re-rank) → inject top-k chunks into prompt → LLM → answer + citations.
+- **Ingestion:** documents → parse → chunk (512 chars, 64 overlap) → embed (MiniLM) → store in vector index.
+- **Retrieval:** dense vector search now; hybrid (BM25 + vector) + cross-encoder re-rank is the production design.
+- **Access control:** enforced at the **retrieval layer** (metadata filter), never by asking the LLM to hide docs — that's not a security boundary.
+- **Multi-tenancy:** single index + per-document `department`/`access_level` metadata filter; separate collections only for regulated isolation.
+- **Prototype caveat:** FAISS (pure vector index) has no metadata filtering, so access control needs a metadata-aware store (Weaviate/Pinecone/Chroma) in production.
+
+Each section below expands one of these points.
+
 ## System Diagram
 
 ```mermaid
@@ -16,10 +29,11 @@ flowchart TB
         UI --> AUTH{{"JWT Auth\n+ ACL filter"}}
         AUTH --> EMB2["Embedder\n(same model)"]
         EMB2 --> VDB
-        VDB --> RET["Top-k retrieval\n(cosine sim, k=5\nscore ≥ 0.4)"]
+        VDB --> RET["Top-k retrieval\n(cosine sim, k=5\nscore ≥ 0.35)"]
         RET --> RERANK["Re-ranker\n(cross-encoder)\n⚠ production only"]
         RERANK --> LLM["LLM\n(GPT-4o)"]
-        LLM --> RESP["Response\n+ source citations"]
+        LLM --> FAITH["Faithfulness\nself-check\n(optional)"]
+        FAITH --> RESP["Response\n+ source citations\n+ confidence"]
         RESP --> USR
     end
 ```

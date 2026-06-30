@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Corporate RAG Chatbot — Production Architecture</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --text:#e6e8ec; --muted:#9aa0ad; --accent:#4fd1c5; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); min-height: 100vh;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex; flex-direction: column; align-items: center; padding: 32px;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; font-weight: 700; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; max-width: 900px; text-align: center; }
+  .card {
+    background: var(--panel); border-radius: 16px; padding: 28px 36px;
+    box-shadow: 0 8px 40px rgba(0,0,0,.4); max-width: 1480px; width: 100%;
+  }
+  .legend { display: flex; gap: 22px; justify-content: center; margin-top: 20px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .dot { width: 12px; height: 12px; border-radius: 3px; }
+  .mermaid { display: flex; justify-content: center; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 22px; text-align: center; max-width: 1000px; }
+  .badge { color: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>Corporate RAG Chatbot — Production Architecture</h1>
+  <div class="sub">The target "big solution." The shipped prototype implements the highlighted core path (embed → retrieve → gate → LLM → faithfulness → answer); everything else is the production build-out.</div>
+
+  <div class="card">
+    <pre class="mermaid">
+flowchart LR
+
+  %% ---------- CLIENTS ----------
+  subgraph CLIENT["👥 Clients"]
+    direction TB
+    WEB["React widget<br/>(intranet)"]
+    SLACK["Slack bot"]
+  end
+
+  %% ---------- GATEWAY / AUTH ----------
+  subgraph GW["🔐 API Gateway"]
+    direction TB
+    API["FastAPI"]
+    IDP["Identity Provider<br/>(Okta) → JWT"]
+    RL["Rate limiting"]
+    API --- IDP
+    API --- RL
+  end
+
+  %% ---------- INGESTION (event-driven) ----------
+  subgraph ING["📥 Ingestion · event-driven / scheduled"]
+    direction TB
+    CONN["Connectors<br/>Confluence · SharePoint · GDrive"]
+    QUEUE["Message queue"]
+    WORK["Ingestion workers"]
+    PARSE["Parse<br/>Unstructured.io<br/>(tables · OCR)"]
+    CHUNK2["Chunk + tag<br/>access_level · dept"]
+    EMB1["Embed<br/>MiniLM · GPU batch"]
+    CONN --> QUEUE --> WORK --> PARSE --> CHUNK2 --> EMB1
+  end
+
+  %% ---------- RETRIEVAL + GENERATION ----------
+  subgraph CORE["⚡ Retrieval + Generation · real-time"]
+    direction TB
+    ACL{{"ACL filter<br/>from JWT claims"}}
+    EMBQ["Embed query"]
+    HYB["Hybrid retrieval<br/>BM25 + vector → RRF"]
+    RERANK["Cross-encoder<br/>re-rank"]
+    CACHE{{"Semantic cache<br/>hit?"}}
+    ROUTER["Router LLM<br/>(tiering)"]
+    LLMS["GPT-4o-mini (simple)<br/>GPT-4o (complex)"]
+    FAITH["Faithfulness<br/>self-check"]
+    CITE["Citation<br/>attribution"]
+    EMBQ --> ACL --> HYB --> RERANK --> CACHE
+    CACHE -->|miss| ROUTER --> LLMS --> FAITH --> CITE
+    CACHE -->|hit| CITE
+  end
+
+  %% ---------- STORES ----------
+  subgraph STORE["💾 Stores"]
+    direction TB
+    VDB[("Vector DB<br/>Weaviate / Pinecone<br/>metadata filter · HNSW")]
+    REDIS[("Redis<br/>cache + sessions")]
+    OBJ[("Object storage<br/>raw documents")]
+  end
+
+  %% ---------- OBSERVABILITY / EVAL ----------
+  subgraph OBS["📊 Observability + Eval"]
+    direction TB
+    PHX["Phoenix / Langfuse<br/>traces · cost · latency"]
+    EVAL["RAGAS eval harness<br/>golden set · CI gate"]
+    FB["Feedback 👍/👎<br/>→ flywheel"]
+    DASH["Datadog / Grafana"]
+  end
+
+  %% ---------- edges between groups ----------
+  WEB --> API
+  SLACK --> API
+  API --> EMBQ
+  CITE --> API --> WEB
+
+  EMB1 --> VDB
+  HYB -. query .-> VDB
+  ACL -. enforce .-> VDB
+  CACHE -. lookup .-> REDIS
+  CITE -. fetch text .-> OBJ
+  CORE -. traces .-> PHX
+  FB --> EVAL --> ROUTER
+
+  %% ---------- styles ----------
+  classDef client fill:#2b2440,stroke:#b794f6,color:#efe6ff;
+  classDef gw fill:#3a1c2e,stroke:#f687b3,color:#ffe6f1;
+  classDef ing fill:#1c3a44,stroke:#4fd1c5,color:#e6f7f5;
+  classDef core fill:#27314a,stroke:#7aa2f7,color:#e8edff;
+  classDef store fill:#3a2f1c,stroke:#f6ad55,color:#fff3e0;
+  classDef obs fill:#1c3a2a,stroke:#68d391,color:#e6fff0;
+
+  class WEB,SLACK client;
+  class API,IDP,RL gw;
+  class CONN,QUEUE,WORK,PARSE,CHUNK2,EMB1 ing;
+  class ACL,EMBQ,HYB,RERANK,CACHE,ROUTER,LLMS,FAITH,CITE core;
+  class VDB,REDIS,OBJ store;
+  class PHX,EVAL,FB,DASH obs;
+    </pre>
+
+    <div class="legend">
+      <span><span class="dot" style="background:#b794f6"></span>Clients</span>
+      <span><span class="dot" style="background:#f687b3"></span>Gateway / Auth</span>
+      <span><span class="dot" style="background:#4fd1c5"></span>Ingestion</span>
+      <span><span class="dot" style="background:#7aa2f7"></span>Retrieval + Generation</span>
+      <span><span class="dot" style="background:#f6ad55"></span>Stores</span>
+      <span><span class="dot" style="background:#68d391"></span>Observability + Eval</span>
+    </div>
+  </div>
+
+  <footer>
+    Key production deltas vs. the prototype: event-driven ingestion · metadata-aware vector store enabling
+    <span class="badge">JWT-based access control at the retrieval layer</span> · hybrid retrieval + cross-encoder re-rank ·
+    <span class="badge">model tiering</span> + semantic cache for cost · Phoenix tracing + RAGAS eval harness driving the
+    observe → evaluate → experiment flywheel.
+  </footer>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "dark",
+    flowchart: { curve: "basis", nodeSpacing: 40, rankSpacing: 65 },
+    securityLevel: "loose",
+  });
+</script>
+</body>
+</html>
