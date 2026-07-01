@@ -260,7 +260,9 @@ flowchart TB
     USR["Employee"]
     GW["API Gateway<br/>FastAPI · Okta JWT · rate limiting"]
     CORE["Agentic generation core<br/>conversation agent + orchestrator + abilities<br/>(detailed in 8b)"]
-    KBS[("Knowledge bases<br/>HR · Technical · Wiki<br/>one index each")]
+    KBS[("Vector stores<br/>one index per KB<br/>HR · Technical · Wiki")]
+    DOCS[("Document store<br/>raw files, object storage")]
+    META[("Metadata DB<br/>Postgres: catalog · access levels")]
     CACHE[("Redis<br/>semantic cache + sessions")]
     METRICS[("Metrics DB<br/>live perf + feedback")]
     ING["Ingestion pipeline<br/>connectors → parse → chunk → embed"]
@@ -268,9 +270,13 @@ flowchart TB
 
     USR -->|question| GW --> CORE
     CORE -->|answer + citations| GW --> USR
-    CORE --> KBS
+    CORE -->|retrieve chunks| KBS
+    CORE -.->|fetch cited text| DOCS
+    CORE -.->|access check| META
     CORE --> CACHE
     ING --> KBS
+    ING --> DOCS
+    ING --> META
     CORE -. live perf + traces .-> METRICS
     CORE -. traces .-> OBS
     METRICS --> OBS
@@ -354,6 +360,36 @@ Each ability is a self-contained tool with a typed interface, its own retriever 
 
 Adding a new domain = adding a new ability, not reworking a monolith.
 
+### Per-ability data pipeline: storage, chunking, retrieval
+
+Section 2 (chunking) and Section 3 (retrieval) describe the *prototype's single* pipeline. In the agentic target each ability owns its own, tuned to its content. This is the part that was implicit before — made concrete here.
+
+**Where the data lives (three stores, not one).** "The database" is really three layers, because raw files, searchable vectors, and metadata have different needs:
+
+| Layer | Holds | Tech | Why separate |
+|---|---|---|---|
+| Document store | the raw source files (PDF, MD, HTML) + versions | object storage (S3 / GCS) | cheap, durable; cited text is fetched from here at answer time |
+| Vector store (one index per KB) | chunk embeddings + per-chunk metadata (`source`, `dept`, `access_level`) | Weaviate / Pinecone / pgvector | metadata-aware filtering enables access control; per-KB tuning |
+| Metadata / relational DB | doc catalog, access levels, ingestion state, versions | Postgres | drives incremental re-ingest and access decisions |
+
+**Chunking — tuned per domain (not one size):**
+
+| Ability | Chunking strategy | Why |
+|---|---|---|
+| HR policies | section/heading-aware, ~512 tokens, keep a clause whole | policies are short, self-contained rules; don't split a rule |
+| Technical docs | structure-aware, larger (~800–1,000 tokens), keep code blocks + tables intact (Unstructured.io) | code/tables lose meaning when split mid-block |
+| Project wikis | heading-based, medium, carry the page-title as a prefix on every chunk | wiki pages are long and multi-topic; the title disambiguates |
+
+All use overlap to avoid boundary loss (Section 2), and re-chunk incrementally when the source doc changes (hash-based change detection).
+
+**Retrieval — hybrid + re-rank, per-ability config:**
+- **Hybrid** (BM25 + dense vector, fused with RRF) — the production strategy from Section 3, now applied inside each ability so it can weight keyword vs. semantic differently (technical docs lean keyword for exact API/error names; HR leans semantic).
+- **Cross-encoder re-rank** on the merged candidates before they go to the LLM.
+- **Metadata filter first** — the ACL from `UserContext` is applied at query time so out-of-scope documents are never even retrieved (Section 5).
+- **Per-ability `top_k` and threshold** — an ability with a small, precise KB (HR) can run a tighter threshold than a broad one (wiki).
+
+The orchestrator doesn't know these details — each ability exposes the same typed interface (`Query in → AbilityResult out`), so retrieval internals stay encapsulated.
+
 ### End-to-end flow
 
 ```
@@ -398,6 +434,9 @@ Every hop passes a **validated, typed object** — `Query`, `AbilityResult`, `An
 |---|---|---|
 | Agents | Single RAG call | Conversation agent + orchestrator + N abilities |
 | Knowledge bases | One flat FAISS index | One specialized RAG per KB |
+| Storage | One index; raw text inline | 3 layers: object store (files) + per-KB vector store + Postgres metadata |
+| Chunking | Uniform 512/64 | Per-domain (section-aware HR, code/table-aware technical, heading-based wiki) |
+| Retrieval | Dense vector, top-k + threshold | Hybrid (BM25+vector+RRF) + cross-encoder re-rank + metadata ACL, per-ability config |
 | Personalization | None | `UserContext` (role/purpose) drives answer + access |
 | Memory | Last-3-turn window | Last-5 verbatim + summarized long-term |
 | I/O | Free-text | Typed Pydantic/JSON at every hop |

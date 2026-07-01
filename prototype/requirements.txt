@@ -1,4 +1,4 @@
-# Tested with Python 3.11
+# Tested with Python 3.12
 python-dotenv==1.0.1
 
 # LangChain ecosystem
