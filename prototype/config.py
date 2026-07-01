@@ -18,12 +18,22 @@ CHUNK_OVERLAP = 64
 
 # Retrieval
 TOP_K_RETRIEVAL = 5
-# Cosine similarity threshold (0–1). 0.4 is intentionally permissive for a demo;
-# production would tune this per-corpus with precision/recall eval.
-SIMILARITY_THRESHOLD = 0.4
+# Cosine similarity threshold (0–1). Tuned empirically against the mock corpus:
+# genuine matches score ~0.36+, out-of-scope queries fall below ~0.31, so 0.35
+# separates them. A production system would tune this on a labeled eval set.
+SIMILARITY_THRESHOLD = 0.35
 
 # Vector DB — one sub-directory per collection (department namespace demo)
-VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./chromadb_data")
+VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./faiss_index")
+
+# Faithfulness self-check (RAGAS-style groundedness pass).
+# A second, cheap LLM call verifies every claim in the answer is supported by the
+# retrieved context. Off by default (adds ~1 LLM call of latency + cost); flip on
+# globally here, or per-query via query(..., check_faithfulness=True).
+FAITHFULNESS_CHECK_ENABLED = os.getenv("FAITHFULNESS_CHECK", "false").lower() == "true"
+FAITHFULNESS_THRESHOLD = 0.5  # below this, the answer is flagged for the user to verify
+# Cheaper model for the judge pass; falls back to LLM_MODEL if unset.
+FAITHFULNESS_MODEL = os.getenv("FAITHFULNESS_MODEL", "gpt-4o-mini")
 
 # API
 API_HOST = "0.0.0.0"

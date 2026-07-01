@@ -8,16 +8,24 @@ Or from the project root:
     python -m prototype.main
 """
 
+import json
+import re
 from pathlib import Path
-from typing import List
+from typing import List, Iterator, Optional, Tuple
 
 from langchain.schema import Document
 
 try:
-    from config import LLM_MODEL, OPENAI_API_KEY
+    from config import (
+        LLM_MODEL, OPENAI_API_KEY,
+        FAITHFULNESS_CHECK_ENABLED, FAITHFULNESS_THRESHOLD, FAITHFULNESS_MODEL,
+    )
     from rag_pipeline import DocumentProcessor
 except ImportError:
-    from prototype.config import LLM_MODEL, OPENAI_API_KEY
+    from prototype.config import (
+        LLM_MODEL, OPENAI_API_KEY,
+        FAITHFULNESS_CHECK_ENABLED, FAITHFULNESS_THRESHOLD, FAITHFULNESS_MODEL,
+    )
     from prototype.rag_pipeline import DocumentProcessor
 
 from langchain_openai import ChatOpenAI
@@ -36,19 +44,73 @@ Never make up policies, numbers, or names. If you're uncertain, say so.
 Always cite the source document at the end of your answer."""
 
 
+FAITHFULNESS_PROMPT = """You are a strict fact-checker. Given CONTEXT and an ANSWER, \
+decide whether every factual claim in the ANSWER is directly supported by the CONTEXT.
+
+Return ONLY a JSON object, no other text:
+{{"faithfulness": <float 0.0-1.0>, "unsupported_claims": ["...", ...]}}
+where faithfulness = (number of supported claims) / (total claims).
+If the ANSWER makes no factual claims (e.g. a refusal or a request to rephrase),
+return {{"faithfulness": 1.0, "unsupported_claims": []}}.
+
+CONTEXT:
+{context}
+
+ANSWER:
+{answer}"""
+
+
+def _extract_json(text: str) -> dict:
+    """Best-effort parse of a JSON object from an LLM response (may be fenced)."""
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return {}
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {}
+
+
 class CorporateChatbot:
     """Main chatbot: ingests docs, retrieves context, generates grounded answers."""
 
     def __init__(self, collection_name: str = "default"):
         self.doc_processor = DocumentProcessor(collection_name=collection_name)
-        self.llm = ChatOpenAI(
-            model_name=LLM_MODEL,
-            api_key=OPENAI_API_KEY,
-            temperature=0.2,  # low temp keeps answers factual and reproducible
-        )
+        # LLM is built lazily on first use: the UI, health, feedback, and
+        # out-of-scope paths never call it, so the app should run without a key.
+        self._llm: Optional[ChatOpenAI] = None
+        self._judge_llm: Optional[ChatOpenAI] = None
         # Simple in-memory conversation history (last 3 turns = 6 messages)
         self.conversation_history: List[dict] = []
         self.MAX_HISTORY_TURNS = 3
+
+    @property
+    def llm(self) -> ChatOpenAI:
+        if self._llm is None:
+            if not OPENAI_API_KEY:
+                raise RuntimeError(
+                    "OPENAI_API_KEY is not set. Add it to prototype/.env to enable "
+                    "answer generation. (Retrieval, the UI, and feedback work without it.)"
+                )
+            self._llm = ChatOpenAI(
+                model_name=LLM_MODEL,
+                api_key=OPENAI_API_KEY,
+                temperature=0.2,  # low temp keeps answers factual and reproducible
+            )
+        return self._llm
+
+    @property
+    def judge_llm(self) -> ChatOpenAI:
+        """Cheaper model used only for the faithfulness self-check."""
+        if self._judge_llm is None:
+            if not OPENAI_API_KEY:
+                raise RuntimeError("OPENAI_API_KEY is not set; faithfulness check needs it.")
+            self._judge_llm = ChatOpenAI(
+                model_name=FAITHFULNESS_MODEL,
+                api_key=OPENAI_API_KEY,
+                temperature=0.0,  # deterministic grading
+            )
+        return self._judge_llm
 
     def load_documents_from_directory(self, directory: Path = MOCK_DATA_DIR) -> None:
         """Load all .txt and .md files from a directory into the vector store."""
@@ -81,21 +143,29 @@ class CorporateChatbot:
             return "Wiki"
         return "General"
 
-    def query(self, user_query: str) -> dict:
-        """Process a user query. Returns response, sources, and confidence info."""
+    def _prepare(self, user_query: str) -> Tuple[Optional[str], dict, Optional[str]]:
+        """
+        Retrieve context and build the prompt. Shared by query() and query_stream().
+
+        Returns (prompt, meta, context). If prompt is None the request should
+        short-circuit and meta already holds the full canned response
+        (not-ready / out-of-scope); context is None in that case. Otherwise meta
+        holds sources/confidence/confidence_level and context is the raw retrieved
+        text (reused by the faithfulness check).
+        """
         if not self.doc_processor.is_ready:
-            return {
+            return None, {
                 "response": "The knowledge base is not initialized. Please load documents first.",
                 "sources": [],
                 "confidence": 0.0,
                 "confidence_level": "unavailable",
-            }
+            }, None
 
         retrieved = self.doc_processor.retrieve(user_query)
 
         # Out-of-scope: nothing retrieved above threshold
         if not retrieved:
-            return {
+            return None, {
                 "response": (
                     "I couldn't find relevant information in the knowledge base for that question. "
                     "Try rephrasing, or contact hr@acmecorp.com / #it-help for direct support."
@@ -103,7 +173,7 @@ class CorporateChatbot:
                 "sources": [],
                 "confidence": 0.0,
                 "confidence_level": "out_of_scope",
-            }
+            }, None
 
         # Build context block with source attribution per chunk
         context_blocks = []
@@ -127,26 +197,119 @@ Context:
 {history_str}
 Current question: {user_query}"""
 
-        response = self.llm.invoke(prompt)
-        answer = response.content
-
-        # Update conversation history
-        self.conversation_history.append({"role": "user", "content": user_query})
-        self.conversation_history.append({"role": "assistant", "content": answer})
-
+        # Score bands calibrated to the all-MiniLM-L6-v2 cosine distribution,
+        # where strong matches land ~0.5 and marginal ones ~0.36.
         avg_score = sum(s for _, s in retrieved) / len(retrieved)
         confidence_level = (
-            "high" if avg_score >= 0.7
-            else "medium" if avg_score >= 0.55
+            "high" if avg_score >= 0.5
+            else "medium" if avg_score >= 0.42
             else "low"
         )
 
-        return {
-            "response": answer,
+        meta = {
             "sources": list({doc.metadata.get("source", "unknown") for doc, _ in retrieved}),
             "confidence": round(avg_score, 3),
             "confidence_level": confidence_level,
         }
+        return prompt, meta, context
+
+    def _record_turn(self, user_query: str, answer: str) -> None:
+        self.conversation_history.append({"role": "user", "content": user_query})
+        self.conversation_history.append({"role": "assistant", "content": answer})
+
+    def check_faithfulness(self, answer: str, context: str) -> Tuple[Optional[float], List[str]]:
+        """
+        RAGAS-style groundedness pass: a cheap LLM verifies each claim in `answer`
+        is supported by `context`. Returns (score 0-1, unsupported_claims).
+        Returns (None, []) if the judge call fails — callers treat None as "unknown".
+        """
+        judge_prompt = FAITHFULNESS_PROMPT.format(context=context, answer=answer)
+        try:
+            raw = self.judge_llm.invoke(judge_prompt).content
+        except Exception as e:
+            print(f"Faithfulness check failed: {e}")
+            return None, []
+
+        data = _extract_json(raw)
+        if "faithfulness" not in data:
+            return None, []
+        try:
+            score = max(0.0, min(1.0, float(data["faithfulness"])))
+        except (TypeError, ValueError):
+            return None, []
+        return score, data.get("unsupported_claims", []) or []
+
+    def _maybe_faithfulness(self, result: dict, context: str, enabled: Optional[bool]) -> None:
+        """Run the faithfulness check (if enabled) and annotate result in place."""
+        run = FAITHFULNESS_CHECK_ENABLED if enabled is None else enabled
+        if not run:
+            return
+        score, unsupported = self.check_faithfulness(result["response"], context)
+        result["faithfulness"] = score
+        if score is not None and score < FAITHFULNESS_THRESHOLD:
+            result["faithfulness_warning"] = True
+            result["unsupported_claims"] = unsupported
+            result["response"] += (
+                "\n\nNote: some statements above may not be fully supported by the "
+                "knowledge base — please verify before relying on them."
+            )
+
+    def query(self, user_query: str, check_faithfulness: Optional[bool] = None) -> dict:
+        """
+        Process a user query. Returns response, sources, and confidence info.
+        Pass check_faithfulness=True/False to override the global config per call.
+        """
+        prompt, meta, context = self._prepare(user_query)
+        if prompt is None:
+            return meta
+
+        answer = self.llm.invoke(prompt).content
+        self._record_turn(user_query, answer)
+        result = {"response": answer, **meta}
+        self._maybe_faithfulness(result, context, check_faithfulness)
+        return result
+
+    def query_stream(self, user_query: str, check_faithfulness: Optional[bool] = None) -> Iterator[dict]:
+        """
+        Streaming variant. Yields a sequence of events:
+          {"type": "meta",  ...sources/confidence...}        (always first)
+          {"type": "token", "content": "..."}                (zero or more)
+          {"type": "faithfulness", "score": ..., "warning": bool}  (optional)
+          {"type": "done"}                                    (always last)
+        For short-circuit cases the canned response is emitted as a single token.
+        """
+        prompt, meta, context = self._prepare(user_query)
+
+        if prompt is None:
+            canned = meta.pop("response")
+            yield {"type": "meta", **meta}
+            yield {"type": "token", "content": canned}
+            yield {"type": "done"}
+            return
+
+        yield {"type": "meta", **meta}
+        parts: List[str] = []
+        for chunk in self.llm.stream(prompt):
+            token = chunk.content
+            if token:
+                parts.append(token)
+                yield {"type": "token", "content": token}
+
+        answer = "".join(parts)
+        self._record_turn(user_query, answer)
+
+        run = FAITHFULNESS_CHECK_ENABLED if check_faithfulness is None else check_faithfulness
+        if run:
+            score, unsupported = self.check_faithfulness(answer, context)
+            warning = score is not None and score < FAITHFULNESS_THRESHOLD
+            yield {
+                "type": "faithfulness",
+                "score": score,
+                "warning": warning,
+                "unsupported_claims": unsupported if warning else [],
+            }
+
+        yield {"type": "done"}
 
     def reset_history(self) -> None:
         self.conversation_history = []
@@ -164,11 +327,15 @@ if __name__ == "__main__":
         "What's the lunch subsidy policy?",  # intentionally out of scope
     ]
 
+    # Demo the faithfulness self-check explicitly (independent of the env flag).
     for q in test_queries:
         print(f"\n{'='*60}")
         print(f"Query: {q}")
         print("=" * 60)
-        result = chatbot.query(q)
+        result = chatbot.query(q, check_faithfulness=True)
         print(f"Response: {result['response']}")
         print(f"Sources: {result['sources']}")
         print(f"Confidence: {result['confidence']} ({result['confidence_level']})")
+        if result.get("faithfulness") is not None:
+            print(f"Faithfulness: {result['faithfulness']:.2f}"
+                  f"{'  [flagged]' if result.get('faithfulness_warning') else ''}")
